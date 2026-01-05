@@ -42,3 +42,4 @@ htmlcov/
 .coverage.*
 coverage.xml
 .pytest_cache/
+.env.bak
