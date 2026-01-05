@@ -1,0 +1,114 @@
+@startuml
+
+!includeurl https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title Klaro-hub 플랫폼 - C4 컨테이너(제품 내부 조합 기반, 전역 워크플로 없음)
+
+LAYOUT_WITH_LEGEND()
+LAYOUT_LEFT_RIGHT()
+
+' ===== 사용자(3가지 역할) =====
+Person(superAdmin, "슈퍼 어드민", "플랫폼 전체 관리자(전 테넌트/전역 정책/운영)")
+Person(tenantAdmin, "플랫폼 어드민", "자기 테넌트 관리자(사용자/권한/설정/리소스)")
+Person(endUser, "유저", "테넌트 내 사용자(각 제품 기능을 사용해 결과물 생성/실행/배포)")
+
+' ===== 외부 시스템 =====
+System_Ext(extAi, "외부 AI 제공자", "LLM/TTS/이미지 등")
+System_Ext(pg, "결제 대행(PG)", "결제/정산(옵션)")
+System_Ext(custSys, "고객사 시스템", "고객사 내부/외부 연동(옵션)")
+
+System_Boundary(platform, "Klaro-hub 플랫폼(온프렘, 멀티테넌트)") {
+  ' Edge / UI
+  Container(ingress, "Nginx/인그레스", "리버스 프록시", "TLS 종료, 라우팅")
+  Container(front, "Klaro-hub 프론트", "웹앱(단일 레포)", "서비스 모듈화 + 공통 컴포넌트/레지스트리로 일관 UI/UX")
+
+  ' Platform core
+  Container(rootGw, "루트 API 게이트웨이", "게이트웨이", "인증/인가, 테넌트 컨텍스트 확정, 공통 정책, 내부 라우팅")
+  Container(iam, "사용자/IAM 서비스", "서비스", "테넌트/사용자/RBAC/정책, 인증/인가")
+
+  ' Internal standard
+  Container(grpcSdk, "Proto + gRPC SDK", "라이브러리", ".proto 계약 + SDK 생성/배포(표준 에러/메타데이터/컨텍스트 전파)")
+
+  ' Billing / Token economy
+  Container(billing, "과금/정산 서비스", "서비스", "테넌트 토큰 지갑, 요금/환율 정책, 쿼터/예산, 예약(hold)/확정(settle)")
+  ContainerDb(tokenWallet, "테넌트 토큰 지갑", "DB", "테넌트별 잔액/거래내역/한도")
+  ContainerDb(pricePolicy, "요금/환율 정책 저장소", "DB", "외부 비용 → 내부 토큰 환산 규칙(플랜/버전)")
+
+  ' Integration hub (company-key proxy)
+  Container(integration, "연동 허브", "서비스", "외부 AI 프록시 호출(회사 키), 제공자 사용량 계측, 표준 이벤트 발행")
+  ContainerDb(secretVault, "키/시크릿 저장소", "Vault/Secret", "회사 키/자격증명 보관(접근통제/감사)")
+
+  ' Domain services (each may do internal composition)
+  Container(docSvc, "문서 처리 제품", "서비스", "문서 수집/전처리/추출/변환(내부 단계 조합)")
+  Container(qnaSvc, "질의응답/챗봇 제품", "서비스", "검색→생성→후처리 등 내부 파이프라인 조합")
+  Container(modelSvc, "모델/파이프라인 제품", "서비스", "학습/튜닝/연결 등 내부 절차 조합")
+  Container(deploySvc, "배포/정책 제품", "서비스", "가드레일/배포/버전/엔드포인트 운영 절차 조합")
+  Container(evalSvc, "성능 평가 제품", "서비스", "평가 시나리오 실행/집계/리포팅 절차 조합")
+  Container(reportSvc, "자동 보고서 제품", "서비스", "데이터 수집→요약/생성→발행 절차 조합")
+
+  ' Data concept (keep clean)
+  ContainerDb(tenantData, "테넌트 데이터 저장소(개념)", "DB/스토리지", "서비스별 DB 소유 + 테넌트 단위 논리 격리(개별 연결선은 생략)")
+}
+
+' ===== 역할 -> 접근 =====
+Rel(superAdmin, ingress, "접속", "HTTPS")
+Rel(tenantAdmin, ingress, "접속", "HTTPS")
+Rel(endUser, ingress, "접속", "HTTPS")
+Rel(ingress, front, "UI 제공", "HTTP")
+Rel(front, rootGw, "플랫폼 API 호출", "HTTPS/JSON")
+
+' ===== 인증/인가 =====
+Rel(rootGw, iam, "인증/인가 + 테넌트 확정", "gRPC/REST")
+
+' ===== 내부 라우팅(제품 단위) =====
+Rel(rootGw, docSvc, "제품 API 라우팅", "내부 RPC")
+Rel(rootGw, qnaSvc, "제품 API 라우팅", "내부 RPC")
+Rel(rootGw, modelSvc, "제품 API 라우팅", "내부 RPC")
+Rel(rootGw, deploySvc, "제품 API 라우팅", "내부 RPC")
+Rel(rootGw, evalSvc, "제품 API 라우팅", "내부 RPC")
+Rel(rootGw, reportSvc, "제품 API 라우팅", "내부 RPC")
+
+' ===== 외부 AI는 연동 허브만 호출(회사 키) =====
+Rel(docSvc, integration, "외부 AI 사용 요청", "내부 RPC")
+Rel(qnaSvc, integration, "외부 AI 사용 요청", "내부 RPC")
+Rel(modelSvc, integration, "외부 AI 사용 요청", "내부 RPC")
+Rel(deploySvc, integration, "외부 AI 사용 요청", "내부 RPC")
+Rel(evalSvc, integration, "외부 AI 사용 요청", "내부 RPC")
+Rel(reportSvc, integration, "외부 AI 사용 요청", "내부 RPC")
+
+Rel(integration, secretVault, "회사 키/시크릿 조회", "secure access")
+Rel(integration, extAi, "외부 AI 호출(회사 키)", "HTTPS/gRPC")
+Rel(integration, custSys, "고객사 시스템 연동(옵션)", "HTTPS/VPN 등")
+
+' ===== 토큰 과금: 예약(hold) + 확정(settle) =====
+Rel(rootGw, billing, "사전 체크/예약(hold)", "내부 RPC")
+Rel(integration, billing, "실사용량 이벤트(확정/정산)", "이벤트/내부 RPC")
+Rel(billing, tokenWallet, "차감/환불/한도 검사", "DB")
+Rel(billing, pricePolicy, "요금/환율 정책 조회", "DB")
+Rel(billing, pg, "결제/정산(옵션)", "HTTPS")
+
+' ===== Notes =====
+note right of integration
+연동 허브 책임
+- 외부 호출 프록시(회사 키 은닉)
+- 제공자별 사용량 계측(입/출력 토큰, 초, 장수 등)
+- 표준 사용량 이벤트로 변환해 과금 서비스로 전달
+end note
+
+note right of billing
+권장 과금 흐름(2-phase)
+1) 호출 전: 예약(hold) - 잔액/쿼터/정책 검사
+2) 호출 후: 확정(settle) - 실사용량 기반 차감
+- 실패/취소: hold 해제 또는 최소 차감(정책)
+end note
+
+note right of grpcSdk
+내부 서비스 간 통신 표준(선은 생략)
+- gRPC
+- .proto 계약
+- 생성된 SDK(클라이언트/서버 스텁)
+- 메타데이터로 테넌트/유저 컨텍스트 전파
+end note
+
+@enduml
+

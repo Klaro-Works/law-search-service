@@ -1,0 +1,113 @@
+@startuml
+
+!includeurl https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title Law Search Service - 아키텍처 (C4 Container)
+
+LAYOUT_WITH_LEGEND()
+LAYOUT_LEFT_RIGHT()
+
+' ===== 외부 시스템 =====
+System_Ext(lawGovKr, "law.go.kr", "국가법령정보센터 API")
+System_Ext(courtGovKr, "court.go.kr", "대법원 판례 API (추후)")
+
+' ===== Klaro Hub Services =====
+Person(endUser, "사용자", "법령 정보 검색")
+System(ragChatbot, "RAG Chatbot", "법령 관련 질의응답")
+System(contractReview, "계약 검토 서비스", "계약서 법령 검증")
+System(integrationHub, "Integration Hub", "외부 AI API 프록시")
+System(billingService, "과금 서비스", "토큰 사용량 과금")
+
+System_Boundary(lawSearchService, "Law Search Service") {
+    
+    ' ===== Interface Layer =====
+    Container(restApi, "REST API", "FastAPI", "HTTP/JSON API 제공")
+    Container(mcpServer, "MCP Server", "MCP SDK", "LLM Agent용 도구 인터페이스")
+    
+    ' ===== Service Layer =====
+    Container(searchService, "Search Service", "Python", "하이브리드 검색 로직\n(Lexical + Semantic)")
+    Container(lawService, "Law Service", "Python", "법령 CRUD 관리")
+    Container(cacheService, "Cache Service", "Redis Client", "검색 결과 캐싱")
+    
+    ' ===== Data Pipeline Layer =====
+    Container(dataCollector, "Data Collector", "Python/APScheduler", "law.go.kr API 호출\n주기적 데이터 수집")
+    Container(dataProcessor, "Data Processor", "Python", "법령 파싱\n조문 분리")
+    Container(embedder, "Embedder", "Python", "임베딩 생성\n(OpenAI or Local)")
+    
+    ' ===== Storage Layer =====
+    ContainerDb(postgres, "PostgreSQL", "관계형 DB", "법령 메타데이터\nFull-Text Search")
+    ContainerDb(qdrant, "Qdrant", "벡터 DB", "법령/조문 임베딩\n의미 기반 검색")
+    ContainerDb(redis, "Redis", "인메모리 DB", "검색 결과 캐시\nRate Limiting")
+    ContainerDb(minio, "MinIO", "Object Storage", "원본 법령 문서\n(XML/JSON)")
+}
+
+' ===== 사용자 흐름 =====
+Rel(endUser, restApi, "검색 요청", "HTTPS/JSON")
+Rel(ragChatbot, mcpServer, "MCP 도구 호출", "MCP Protocol")
+Rel(contractReview, restApi, "법령 조회", "HTTPS/JSON")
+
+' ===== API/MCP → Service Layer =====
+Rel(restApi, searchService, "검색 요청", "")
+Rel(restApi, lawService, "법령 조회", "")
+Rel(mcpServer, searchService, "search_law", "")
+Rel(mcpServer, lawService, "get_law_detail", "")
+
+' ===== Service → Storage =====
+Rel(searchService, postgres, "Lexical 검색", "SQL FTS")
+Rel(searchService, qdrant, "Semantic 검색", "Vector Search")
+Rel(searchService, cacheService, "캐시 조회/저장", "")
+Rel(lawService, postgres, "CRUD", "SQL")
+
+Rel(cacheService, redis, "Read/Write", "")
+
+' ===== Data Pipeline =====
+Rel(dataCollector, lawGovKr, "API 호출", "HTTPS")
+Rel(dataCollector, courtGovKr, "판례 수집 (추후)", "HTTPS")
+BiRel(dataCollector, dataProcessor, "수집 데이터 전달", "")
+BiRel(dataProcessor, embedder, "텍스트 전달", "")
+
+Rel(dataProcessor, postgres, "메타데이터 저장", "SQL")
+Rel(dataProcessor, minio, "원본 문서 저장", "S3 API")
+Rel(embedder, qdrant, "벡터 적재", "gRPC")
+
+' ===== 외부 연동 =====
+Rel(embedder, integrationHub, "임베딩 생성 요청", "gRPC/REST")
+Rel(dataCollector, billingService, "API 호출 비용 차감", "gRPC")
+
+' ===== Notes =====
+note right of searchService
+  하이브리드 검색 전략
+  1. Lexical Search (PostgreSQL FTS)
+  2. Semantic Search (Qdrant)
+  3. RRF (Reciprocal Rank Fusion)
+  
+  검색 유형: lexical | semantic | hybrid
+end note
+
+note right of dataCollector
+  자동 업데이트 파이프라인
+  - 스케줄: 매일 새벽 2시
+  - 증분 업데이트 (변경분만)
+  - 실패 시 재시도 로직
+end note
+
+note right of mcpServer
+  MCP Tools
+  1. search_law
+     - 법령 검색 (키워드/의미)
+  2. get_law_detail
+     - 법령 상세 조회 (조문 포함)
+  3. search_article
+     - 조문 내 검색
+end note
+
+note right of qdrant
+  Vector Collections
+  1. laws (법령 전체)
+     - 법령명 + 소관부처 임베딩
+  2. articles (조문)
+     - 각 조문 내용 임베딩
+     - 상세 검색용
+end note
+
+@enduml
